@@ -1,6 +1,6 @@
 require 'rubygems'
-require 'sinatra'
 require 'ripple'
+require 'sinatra'
 require 'erb'
 require 'uri'
 
@@ -37,7 +37,7 @@ get '/get/:bucket' do |bucket|
   erb :index
 end
 
-get '/get/:bucket/:key' do |bucket, key|
+get %r{/get/([^/]+)/(.*)} do |bucket, key|
   @bucket = bucket
   @keys = client[bucket].keys.sort
   @key = key
@@ -46,7 +46,7 @@ get '/get/:bucket/:key' do |bucket, key|
   erb :index
 end
 
-post '/put/:bucket/:key' do |bucket, key|
+post %r{/put/([^/]+)/(.*)} do |bucket, key|
   @bucket = bucket
   @keys = client[bucket].keys.sort
   @key = key
@@ -62,12 +62,14 @@ post '/put/:bucket/:key' do |bucket, key|
         puts @flash
       end
     end
-    @robject.data = params[:data]
+    @robject.content_type = params[:content_type]
+    @robject.data = @robject.content_type == "application/json" ? ActiveSupport::JSON.decode(params[:data]) : params[:data]
     @robject.store
     redirect "/get/#{@bucket}/#{@key}?flash=#{URI.escape(@flash) if @flash}"
   elsif params[:operation] == "Delete"
     @robject.delete
-    redirect "/get/#{@bucket}/#{@key}"
+    @flash = "Deleted key: #{@key}"
+    redirect "/get/#{@bucket}?flash=#{URI.escape(@flash) if @flash}"
   elsif params[:operation] == "Eval"
     @robject.data = params[:data]
     @robject.store
@@ -85,6 +87,15 @@ post '/newkey/:bucket' do |bucket|
   redirect "/get/#{bucket}"
 end
 
+post '/delete_bucket/:bucket' do |bucket|
+  client[bucket].keys.each {|key|
+    puts "deleting #{key}..."
+    find(bucket,key).delete
+  }
+  redirect "/"
+end
+    
+
 get '/remove_link/:bucket/:key/:link_bucket/:link_key/:link_rel' do |bucket, key, link_bucket, link_key, link_rel|
   o = find(bucket,key)
   o.links = o.links.select{ |link|
@@ -93,6 +104,26 @@ get '/remove_link/:bucket/:key/:link_bucket/:link_key/:link_rel' do |bucket, key
   o.store
   redirect "/get/#{bucket}/#{key}"
 end
+
+get '/test1' do
+  (1..100).each do |i|
+    puts "Saving item #{i}"
+    p = Riak::RObject.new(client['test'], "Parent#{i}")
+    p.content_type = "application/javascript"
+    p.data = {:item => 'one', :batch => i / 10}.to_json
+    p.store
+    (1..100).each do |j|
+      c = Riak::RObject.new(client['test'], "Child#{j}")
+      c.content_type = "application/javascript"
+      c.data = {:item => 'one', :batch => j / 10}.to_json
+      c.store
+      p.links << c.to_link("parent")
+      p.store
+    end
+  end
+end
+
+
 
 private
 def client
@@ -123,13 +154,17 @@ def find(bucket, key)
   end
 end
 
-module Riak
-  class Link
-    attr_accessor :bucket
-    attr_accessor :key
-    def initialize(url, rel)
-      @url, @rel = url, rel
-      @bucket, @key = $1, $2 if @url =~ %r{/raw/([^/]+)/([^/]+)/?}
+# Renders out the appropriate HTML for each content type
+helpers do
+  def render_data(bucket, key, robject)
+    case 
+    when robject.content_type =~ %r{application/json}
+        %Q{<textarea id="key-data" name="data" spellcheck="false">#{robject.data.to_json}</textarea>}
+      when robject.content_type =~ %r{image}
+        %Q{<div id="image-data"><image src="http://#{session[:host]}:#{session[:port]}/riak/#{bucket}/#{key}" /></div>}
+      else
+        %Q{<textarea id="key-data" name="data" spellcheck="false">#{robject.data.to_s}</textarea>}
     end
-  end
+  end  
 end
+
